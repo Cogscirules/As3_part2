@@ -1,0 +1,357 @@
+---
+title: "Assignment 3 - Part 2 - Diagnosing Schizophrenia from Voice"
+author: "Riccardo Fusaroli"
+date: "October 17, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("C:/Users/Bruger/Desktop/Programming/Semester 3/asm. 6")
+
+library(pacman)
+
+
+p_load(tidyverse, pastecs, lme4, caTools, ggplot2, caret, e1071, boot, stats, pROC, lmerTest)
+
+rqa_data = read.csv("final_rqa.csv", header = TRUE)
+
+
+```
+
+## Assignment 3 - Diagnosing schizophrenia from voice
+
+In the previous part of the assignment you generated a bunch of "features", that is, of quantitative descriptors of voice in schizophrenia, focusing on pitch.
+In the course of this assignment we will use them to try to automatically diagnose schizophrenia from voice only, that is, relying on the set of features you produced last time, we will try to produce an automated classifier.
+
+### Question 1
+Build a logistic regression to see whether you can diagnose schizophrenia from pitch range only.
+
+Calculate the different performance measures (accuracy, sensitivity, specificity, PPV, NPV, ROC curve) on a logistic regression using the full dataset. Don't forget the random effects!
+
+Then cross-validate the logistic regression and re-calculate performance on the testing folds. N.B. The cross-validation functions you already have should be tweaked: you need to calculate these new performance measures.
+
+N.B. the predict() function generates probabilities (the full scale between 0 and 1). A probability > .5 indicates a choice of 1, below a choice of 0.
+N.B. you need to decide whether calculate performance on each single test fold or save all the prediction for test folds in one datase, so to calculate overall performance.
+N.B. Now you have two levels of structure: subject and study. Should this impact your cross-validation?
+
+```{r}
+
+logr1 = glmer(diagnosis ~ range + (1 + trial|participant), data = rqa_data, family = binomial)
+summary(logr1)
+
+#use predict to generate probabilities
+rqa_data["prediction"] = predict(logr1, type = "response")
+
+# ROC curve
+rocCurve = roc(response = rqa_data$diagnosis, predictor = rqa_data$predict)
+
+
+
+auc(rocCurve)
+ci(rocCurve)
+plot(rocCurve, legac.axes = TRUE)
+
+
+# confusion matrix
+rqa_data$prediction[rqa_data$prediction>0.5] = "schizophrenia"
+rqa_data$prediction[rqa_data$prediction<=0.5] = "control"
+
+confusionMatrix(data = rqa_data$prediction, reference = rqa_data$diagnosis, positive = "schizophrenia")
+
+
+
+
+#plotting in gg
+ggplot(logr1,aes(diagnosis,range,colour=diagnosis))+geom_point()+theme_classic()
+
+ggplot(logr1, aes(x=diagnosis, y=range)) + 
+  geom_point(shape=1,position=position_jitter(width=.05,height=.05)) + 
+  stat_smooth(method="glm",method.args=list(family="binomial"), se=FALSE)
+
+
+
+
+# cross validation
+
+test_list = NULL
+
+cross_val = matrix(NA,nrow=5,ncol=4)
+colnames(cross_val) = c("accuracy","sensitivity","specificity","area_under_curve")
+
+rqa_data$participant = as.factor(rqa_data$participant)
+subjects = unique(rqa_data$participant)
+folds = createFolds(subjects,k=5)
+
+k=5
+for (i in 1:k) {
+  train_data = filter(rqa_data, !(as.numeric(participant) %in% folds[[i]])) 
+  test_data = filter(rqa_data, as.numeric(participant) %in% folds[[i]])
+  
+  model = glmer(diagnosis ~ scale(range) + (1|study), train_data,family="binomial")
+  
+  predictions_list = predict(model, newdata=test_data, allow.new.levels =T, type = "response")
+  
+  rocCurve = roc(response = test_data$diagnosis,   predictor = predictions_list)
+  area_under_curve = auc(rocCurve)
+  test_list[n] = auc(rocCurve)
+  
+  predictions_list[predictions_list>0.5]="schizophrenia" 
+  predictions_list[predictions_list<=0.5]="control"
+  matrix = confusionMatrix(data = predictions_list, reference = test_data$diagnosis, positive = "schizophrenia")
+  
+  accuracy = matrix$overall[1] 
+  sensitivity = matrix$byClass[1]
+  specificity = matrix$byClass[2] 
+  
+  cross_val[i,] = c(accuracy,sensitivity,specificity, area_under_curve)
+  
+}
+
+
+accuracy = mean(cross_val[,1])
+sensitivity = mean(cross_val[,2])
+specificity = mean(cross_val[,3])
+area_under_curve = mean(cross_val[,4]) 
+
+means= c(accuracy,sensitivity,specificity,area_under_curve)
+performance_measures = rbind(cross_val,means)
+
+
+#can you predict schiz from range of pitch only?
+
+```
+
+
+
+### Question 2
+
+Which single predictor is the best predictor of diagnosis?
+
+```{r}
+
+# Which of DET, REC, ADL, MDL predicst the best by its own.
+
+rqa_data$participant = as.factor(rqa_data$participant)
+subjects = unique(rqa_data$participant)
+folds = createFolds(subjects,k=4)
+
+cross_validate <- function(model){
+ 
+  accuracy_list = NULL
+  sensitivity_list = NULL
+  specificity_list = NULL
+  auc_list = NULL
+  n=1
+  
+  k=4
+  for (i in 1:k) {
+  train_data = filter(rqa_data, !(as.numeric(participant) %in% folds[[i]])) 
+  test_data = filter(rqa_data, as.numeric(participant) %in% folds[[i]])
+  
+  model = glmer(model, train_data,family="binomial")
+  
+  predictions_list = predict(model, newdata=test_data, allow.new.levels = T, type = "response")
+  
+  rocCurve = roc(response = test_data$diagnosis,   predictor = predictions_list)
+  auc_list[n] = auc(rocCurve)
+  
+  predictions_list[predictions_list>0.5]="schizophrenia" 
+  predictions_list[predictions_list<=0.5]="control"
+  matrix = confusionMatrix(data = predictions_list, reference = test_data$diagnosis, positive = "schizophrenia")
+  
+  accuracy_list[n] = matrix$overall[1] 
+  sensitivity_list[n] = matrix$byClass[1]
+  specificity_list[n] = matrix$byClass[2] 
+  
+  output = c(mean(accuracy_list),mean(sensitivity_list),mean(specificity_list),mean(auc_list))
+  
+  n=n+1
+  
+  }
+ 
+  return(output)
+  
+}
+
+
+model_range =  as.formula(glmer(diagnosis ~ scale(range) + (1|study), train_data,family="binomial"))
+
+model_mean = as.formula(glmer(diagnosis ~ scale(mean) + (1|study), train_data,family="binomial"))
+
+model_stdDev = as.formula(glmer(diagnosis ~ scale(stdDev) + (1|study), train_data,family="binomial"))
+
+model_median = as.formula(glmer(diagnosis ~ scale(median) + (1|study), train_data,family="binomial"))
+
+model_InterquartileRange = as.formula(glmer(diagnosis ~ scale(InterquartileRange) + (1|study), train_data,family="binomial"))
+
+model_MeanAbsoluteDeviation = as.formula(glmer(diagnosis ~ scale(MeanAbsoluteDeviation) + (1|study), train_data,family="binomial"))
+
+model_coefficientOfVariation = as.formula(glmer(diagnosis ~ scale(coefficientOfVariation) + (1|study), train_data,family="binomial"))
+
+model_REC = as.formula(glmer(diagnosis ~ scale(rqa_REC) + (1|study), train_data,family="binomial"))
+
+model_DET = as.formula(glmer(diagnosis ~ scale(rqa_DET) + (1|study), train_data,family="binomial"))
+
+model_maxL = as.formula(glmer(diagnosis ~ scale(rqa_maxL) + (1|study), train_data,family="binomial"))
+
+model_L = as.formula(glmer(diagnosis ~ scale(rqa_L) + (1|study), train_data,family="binomial"))
+
+model_ENTR = as.formula(glmer(diagnosis ~ scale(rqa_ENTR) + (1|study), train_data,family="binomial"))
+
+model_TT = as.formula(glmer(diagnosis ~ scale(rqa_TT) + (1|study), train_data,family="binomial"))
+
+model_LAM = as.formula(glmer(diagnosis ~ scale(rqa_LAM) + (1|study), train_data,family="binomial"))
+
+new_df = matrix(NA,nrow=14,ncol=4)
+colnames(new_df) <- c("accuracy","sensitivity","specificity","area_under_curve")
+rownames(new_df) <- c("range","mean","stdDev","median","interquartileRange","MeanAbsoluteDeviation","coefficientOfVariation","rqa_REC","rqa_DET","rqa_maxL","rqa_L","rqa_ENTR","rqa_TT","rqa_LAM")
+
+new_df[1,] = cross_validate(model_range)
+new_df[2,] = cross_validate(model_mean)
+new_df[3,] = cross_validate(model_stdDev)
+new_df[4,] = cross_validate(model_median)
+new_df[5,] = cross_validate(model_InterquartileRange)
+new_df[6,] = cross_validate(model_MeanAbsoluteDeviation)
+new_df[7,] = cross_validate(model_coefficientOfVariation)
+
+new_df[8,] = cross_validate(model_REC)
+new_df[9,] = cross_validate(model_DET)
+new_df[10,] = cross_validate(model_maxL)
+new_df[11,] = cross_validate(model_L)
+new_df[12,] = cross_validate(model_ENTR)
+new_df[13,] = cross_validate(model_TT)
+new_df[14,] = cross_validate(model_LAM)
+
+
+
+```
+
+### Question 3
+
+Now it's time to go wild! Use all (voice-related) variables and interactions you can think of. Compare models and select the best performing model you can find.
+
+Remember:
+- Cross-validation or AIC are crucial to build the best model!
+- After choosing the model, train it on all the data you have
+- Save the model: save(modelName, file = "BestModelForever.rda")
+- Create a Markdown that can: a) extract the features from new pitch files (basically your previous markdown), b) load your model (e.g. load("BestModelForever.rda")), and c) predict the diagnosis in the new dataframe.
+Send it to Celine and Riccardo by Monday (so they'll have time to run it before class)-
+
+```{r}
+
+
+#Which combination of above it the best? 
+# Compare models by out of sample error from cross validation? 
+# What are the coefficients on this model?  
+
+
+rqa_data$participant = as.factor(rqa_data$participant)
+subjects = unique(rqa_data$participant)
+folds = createFolds(subjects,k=4)
+
+cross_validate <- function(model){
+ 
+  accuracy_list = NULL
+  sensitivity_list = NULL
+  specificity_list = NULL
+  auc_list = NULL
+  n=1
+  
+  k=4
+  for (i in 1:k) {
+  train_data = filter(rqa_data, !(as.numeric(participant) %in% folds[[i]])) 
+  test_data <- filter(rqa_data, as.numeric(participant) %in% folds[[i]])
+  
+  model = glmer(model, train_data,family="binomial")
+  
+  predictions_list = predict(model, newdata=test_data, allow.new.levels = T, type = "response") 
+  
+  rocCurve = roc(response = test_data$diagnosis,   predictor = predictions_list)
+  auc_list[n] = auc(rocCurve)
+  
+  predictions_list[predictions_list>0.5]="schizophrenia" 
+  predictions_list[predictions_list<=0.5]="control"
+  matrix = confusionMatrix(data = predictions_list, reference = test_data$diagnosis, positive = "schizophrenia")
+  
+  accuracy_list[n] = matrix$overall[1] 
+  sensitivity_list[n] = matrix$byClass[1]
+  specificity_list[n] = matrix$byClass[2] 
+  
+  output = c(mean(accuracy_list),mean(sensitivity_list),mean(specificity_list),mean(auc_list))
+  
+  n=n+1
+  
+  }
+ 
+  return(output)
+  
+}
+
+
+model1 <- as.formula(glmer(diagnosis ~ scale(coefficientOfVariation) + (1|study), train_data,family="binomial"))
+
+model2 = as.formula(glmer(diagnosis ~ scale(coefficientOfVariation) + scale(rqa_REC) + (1|study), train_data,family="binomial" ))
+
+model3 = as.formula(glmer(diagnosis ~ scale(mean)*scale(range)+scale(rqa_REC) + (1|study), train_data,family="binomial" ))
+
+model4 = as.formula(glmer(diagnosis ~ scale(mean)*scale(range)+scale(rqa_REC)+scale(rqa_TT) + (1|study), train_data,family="binomial" ))
+
+model5 = as.formula(glmer(diagnosis ~ scale(mean)*scale(range)+scale(rqa_REC)+scale(rqa_TT)+scale(rqa_maxL) + (1|study), train_data,family="binomial" ))
+
+model6 = as.formula(glmer(diagnosis ~ scale(mean)*scale(range)+scale(rqa_DET) + (1|study),train_data,family="binomial" ))
+
+model7 = as.formula(glmer(diagnosis ~ scale(coefficientOfVariation) + scale(rqa_REC) + scale(rqa_TT)+ (1|study),train_data,family="binomial" ))
+
+model8 = as.formula(glmer(diagnosis ~ scale(mean)*scale(range)*scale(coefficientOfVariation)+scale(rqa_REC)+scale(rqa_TT) + (1|study), train_data,family="binomial" ))
+
+model9 = as.formula(glmer(diagnosis ~ scale(mean)*scale(range)+scale(rqa_REC)+scale(rqa_TT)+scale(rqa_LAM) + (1|study), train_data,family="binomial" ))
+
+model10 = as.formula(glmer(diagnosis ~ scale(mean)*scale(range)+scale(rqa_REC)+scale(rqa_TT)+scale(rqa_LAM)+scale(rqa_maxL) + (1|study), train_data,family="binomial" ))
+
+new_df2 = matrix(NA,nrow=10,ncol=4)
+colnames(new_df2) = c("accuracy","sensitivity","specificity","area_under_curve")
+
+new_df2[1,] = cross_validate(model1)
+new_df2[2,] = cross_validate(model2)
+new_df2[3,] = cross_validate(model3)
+new_df2[4,] = cross_validate(model4)
+new_df2[5,] = cross_validate(model5)
+new_df2[6,] = cross_validate(model6)
+new_df2[7,] = cross_validate(model7)
+new_df2[8,] = cross_validate(model8)
+new_df2[9,] = cross_validate(model9)
+new_df2[10,] = cross_validate(model10)
+
+
+
+# Model 4 gave the best results
+
+fav_model = glmer(diagnosis ~ scale(mean)*scale(range)+scale(rqa_REC)+scale(rqa_TT) + (1|study), rqa_data,family="binomial" ) 
+
+save(fav_model, file = "fav_model.rda")
+
+
+```
+
+### Question 4: Report the results
+
+METHODS SECTION: how did you analyse the data?
+
+RESULTS SECTION: can you diagnose schizophrenia based on voice? which features are used? Comment on the difference between the different performance measures.
+
+```{r}
+
+
+
+```
+
+
+### Bonus question 5
+
+You have some additional bonus data involving speech rate, pauses, etc. Include them in your analysis. Do they improve classification?
+
+### Bonus question 6
+
+Logistic regression is only one of many classification algorithms. Try using others and compare performance. Some examples: Discriminant Function, Random Forest, Support Vector Machine, etc. The package caret provides them.
