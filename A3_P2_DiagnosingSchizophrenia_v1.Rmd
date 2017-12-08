@@ -48,8 +48,7 @@ rqa_data["prediction"] = predict(logr1, type = "response")
 rocCurve = roc(response = rqa_data$diagnosis, predictor = rqa_data$predict)
 
 
-
-auc(rocCurve)
+auc = auc(rocCurve)
 ci(rocCurve)
 plot(rocCurve, legac.axes = TRUE)
 
@@ -75,7 +74,7 @@ ggplot(logr1, aes(x=diagnosis, y=range)) +
 
 # cross validation
 
-test_list = NULL
+test_list1 = NULL
 
 cross_val = matrix(NA,nrow=5,ncol=4)
 colnames(cross_val) = c("accuracy","sensitivity","specificity","area_under_curve")
@@ -83,6 +82,7 @@ colnames(cross_val) = c("accuracy","sensitivity","specificity","area_under_curve
 rqa_data$participant = as.factor(rqa_data$participant)
 subjects = unique(rqa_data$participant)
 folds = createFolds(subjects,k=5)
+
 
 k=5
 for (i in 1:k) {
@@ -95,7 +95,7 @@ for (i in 1:k) {
   
   rocCurve = roc(response = test_data$diagnosis,   predictor = predictions_list)
   area_under_curve = auc(rocCurve)
-  test_list[n] = auc(rocCurve)
+  test_list1[n] = auc
   
   predictions_list[predictions_list>0.5]="schizophrenia" 
   predictions_list[predictions_list<=0.5]="control"
@@ -117,7 +117,7 @@ area_under_curve = mean(cross_val[,4])
 
 means= c(accuracy,sensitivity,specificity,area_under_curve)
 performance_measures = rbind(cross_val,means)
-
+View(performance_measures)
 
 #can you predict schiz from range of pitch only?
 
